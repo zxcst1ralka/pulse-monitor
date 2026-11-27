@@ -125,10 +125,14 @@ async def public_page(slug: str, request: Request, db: Db):
         Incident.monitor_id.in_(ids), (Incident.started_at >= start_of("30d")) | (Incident.status == "ongoing"),
     ).order_by(Incident.started_at.desc()).limit(30))).all()
     states = {row.status for row in rows if row.is_active}
-    overall = next((state for state in ("down", "degraded", "pending", "up") if state in states), "pending")
+    overall = next((state for state in ("down", "degraded", "pending", "up") if state in states), "paused" if rows else "pending")
+    updated_at = max([
+        page.updated_at,
+        *(row.updated_at if row.status in {"paused", "pending"} else row.last_checked_at or row.updated_at for row in rows),
+    ])
     return {
         "title": page.title, "description": page.description, "overall": overall,
-        "updated_at": max([page.updated_at, *(row.last_checked_at for row in rows if row.last_checked_at)]),
+        "updated_at": updated_at,
         "synthetic": any(row.is_synthetic for row in rows),
         "monitors": [{"id": row.id, "name": row.name, "status": row.status, "uptime": stats.get(row.id)} for row in rows],
         "incidents": [{

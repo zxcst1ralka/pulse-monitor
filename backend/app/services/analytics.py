@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import and_, case, func, select
@@ -35,16 +36,28 @@ def with_uptime(row):
     return {**row, "uptime": uptime(row["successful"], row["checks"])}
 
 
-async def chart(db: AsyncSession, ids: list[UUID], window: Window, current: datetime):
+async def chart(
+    db: AsyncSession, ids: list[UUID], window: Window, current: datetime,
+    *, metric: Literal["latency", "availability"] = "latency",
+):
     duration, step = WINDOWS[window]
     start = current - duration
     index = func.floor(func.extract("epoch", MonitorCheck.checked_at - start) / step)
-    value = func.avg(MonitorCheck.response_time_ms).filter(MonitorCheck.status.in_(HEALTHY))
+    successful = MonitorCheck.status.in_(HEALTHY)
+    if metric == "availability":
+        value = 100.0 * func.count().filter(successful) / func.count()
+        precision = 2
+    else:
+        value = func.avg(MonitorCheck.response_time_ms).filter(successful)
+        precision = None
     results = dict((await db.execute(select(index, value).where(
         MonitorCheck.monitor_id.in_(ids), MonitorCheck.checked_at >= start, MonitorCheck.checked_at < current,
     ).group_by(index))).all())
     return [
-        {"time": start + timedelta(seconds=i * step), "value": round(float(results[i])) if results.get(i) is not None else None}
+        {
+            "time": start + timedelta(seconds=i * step),
+            "value": round(float(results[i]), precision) if results.get(i) is not None else None,
+        }
         for i in range(int(duration.total_seconds()) // step)
     ]
 

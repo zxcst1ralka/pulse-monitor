@@ -105,7 +105,8 @@ async def test_auth_profile_and_session_rotation(client, test_env):
 async def test_monitor_crud_permissions_and_public_projection(client, test_env):
     owner, _, _ = await register(client, test_env)
     another, _, _ = await register(client, test_env)
-    monitor = await add_monitor(client, owner)
+    monitor = await add_monitor(client, owner, url="example.com")
+    assert monitor["url"] == "https://example.com"
     path = "/monitors/" + monitor["id"]
     assert (await client.get(path, headers=another)).status_code == 404
     assert (await client.post(path + "/check", headers=another)).status_code == 404
@@ -133,8 +134,75 @@ async def test_monitor_crud_permissions_and_public_projection(client, test_env):
         "id": monitor["id"], "name": "Renamed", "status": "pending", "uptime": None,
     }
     assert "example.com" not in public.text
+    assert (await client.post(path + "/pause", headers=owner)).status_code == 200
+    paused_public = (await client.get("/public/status/" + slug)).json()
+    assert paused_public["overall"] == "paused" and paused_public["updated_at"] > public.json()["updated_at"]
     assert (await client.delete(path, headers=owner)).status_code == 204
     assert (await client.get(path, headers=owner)).status_code == 404
+
+
+async def test_password_change_and_admin_block_revoke_sessions(client, test_env):
+    admin, _, _ = await register(client, test_env)
+    member, email, password = await register(client, test_env)
+    async with session_factory(worker=True)() as db, db.begin():
+        account = await db.get(User, test_env[0])
+        account.role = "admin"
+
+    password_update = {"current_password": password, "new_password": uuid4().hex}
+    assert (await client.post("/profile/change-password", headers=member, json=password_update)).status_code == 204
+    assert (await client.get("/auth/me", headers=member)).status_code == 401
+    assert (await client.post("/auth/login", json={"email": email, "password": password})).status_code == 401
+    login = await client.post("/auth/login", json={"email": email, "password": password_update["new_password"]})
+    assert login.status_code == 200
+    member = {"Authorization": "Bearer " + login.json()["access_token"]}
+
+    assert (await client.get("/admin/users", headers=admin)).status_code == 200
+    assert (await client.get("/admin/stats", headers=admin)).status_code == 200
+    blocked = await client.patch(f"/admin/users/{test_env[1]}", headers=admin, json={"is_active": False})
+    assert blocked.status_code == 200 and blocked.json()["is_active"] is False
+    assert (await client.get("/auth/me", headers=member)).status_code == 401
+    assert (await client.post("/auth/refresh")).status_code == 401
+
+
+async def test_dashboard_periods_and_ssl_warning_ownership(client, test_env):
+    owner, _, _ = await register(client, test_env)
+    another, _, _ = await register(client, test_env)
+    expiring = UUID((await add_monitor(client, owner, name="Expiring certificate"))["id"])
+    paused = UUID((await add_monitor(client, owner, name="Paused monitor"))["id"])
+    invalid = UUID((await add_monitor(client, another, name="Invalid certificate"))["id"])
+    current = now()
+    async with session_factory(worker=True)() as db, db.begin():
+        item = await db.get(Monitor, expiring)
+        item.ssl_valid = True
+        item.ssl_expires_at = current + timedelta(days=12)
+        paused_item = await db.get(Monitor, paused)
+        paused_item.is_active = False
+        paused_item.ssl_valid = False
+        invalid_item = await db.get(Monitor, invalid)
+        invalid_item.ssl_valid = False
+        for moment, status, elapsed in [
+            (current - timedelta(days=2), "up", 210),
+            (current - timedelta(seconds=2), "down", 102),
+        ]:
+            db.add(MonitorCheck(
+                monitor_id=expiring, status=status, response_time_ms=elapsed, scheduled_at=moment, checked_at=moment,
+            ))
+
+    recent = (await client.get("/dashboard/summary", headers=owner)).json()
+    week = (await client.get("/dashboard/summary?window=7d", headers=owner)).json()
+    assert recent["uptime"] == 0 and recent["average_ms"] is None
+    assert week["uptime"] == 50 and week["average_ms"] == 210
+    response = await client.get("/dashboard/availability", headers=owner)
+    assert response.status_code == 200, response.text
+    assert [point["value"] for point in response.json()] == [None] * 23 + [0]
+    other_series = (await client.get("/dashboard/availability", headers=another)).json()
+    assert all(point["value"] is None for point in other_series)
+
+    response = await client.get("/dashboard/ssl-warnings", headers=owner)
+    assert response.status_code == 200, response.text
+    assert [(item["id"], item["ssl_valid"]) for item in response.json()] == [(str(expiring), True)]
+    other_warnings = (await client.get("/dashboard/ssl-warnings", headers=another)).json()
+    assert [(item["id"], item["ssl_valid"]) for item in other_warnings] == [(str(invalid), False)]
 
 
 async def test_worker_reserves_only_once_and_restores_incident(client, test_env, monkeypatch):

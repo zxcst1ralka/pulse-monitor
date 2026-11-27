@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { api } from '../api/client'
 import type { Check, Incident, Monitor, MonitorInput, MonitorStatus, Stats, Window } from '../api/types'
-import { LatencyChart, WindowSwitch, windows } from '../components/chart'
+import { CheckChart, WindowSwitch, windows } from '../components/chart'
 import { Confirm, Empty, ErrorPanel, Pagination, SectionTitle, Skeleton, Status, duration, formatDate, labels, ms, percent } from '../components/ui'
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
@@ -18,7 +18,14 @@ const intervals = [60, 300, 600, 900, 1800, 3600]
 const refresh = ['/monitors', '/dashboard', '/incidents']
 const monitorForm = z.object({
   name: z.string().trim().min(1, 'Введите название').max(100),
-  url: z.url({ protocol: /^https?$/, error: 'Введите полный HTTP(S)-адрес' }).max(2048),
+  url: z.string().trim().min(1, 'Введите HTTP(S)-адрес или публичное доменное имя').max(2048).refine(value => {
+    try {
+      const url = new URL(value.includes('://') ? value : `https://${value}`)
+      return /^https?:$/.test(url.protocol) && Boolean(url.hostname) && !url.username && !url.password && !url.hash
+    } catch {
+      return false
+    }
+  }, 'Введите HTTP(S)-адрес или публичное доменное имя'),
   type: z.enum(['http', 'keyword']),
   interval_seconds: z.number().refine(value => intervals.includes(value), 'Выберите интервал'),
   timeout_seconds: z.number().int().min(5).max(30),
@@ -59,7 +66,7 @@ export function MonitorDialog({ monitor, close }: { monitor?: Monitor; close: ()
     <form className="dialog-form" noValidate onSubmit={handleSubmit(body => save.mutate(body, { onSuccess: close }))}>
       <label>Название<input placeholder="Например, Production API" {...register('name')} />
         {errors.name && <small className="field-error">{errors.name.message}</small>}</label>
-      <label>Публичный URL<input type="url" placeholder="https://example.com" {...register('url')} />
+      <label>Публичный URL или домен<input inputMode="url" placeholder="https://example.com" {...register('url')} />
         {errors.url && <small className="field-error">{errors.url.message}</small>}</label>
       <div className="form-grid">
         <label>Тип проверки<select {...register('type')}><option value="http">HTTP / HTTPS</option><option value="keyword">Ключевое слово</option></select></label>
@@ -202,7 +209,7 @@ export function MonitorDetail() {
     </header>
       <div className="stat-line">{metrics.map(([label, value]) => <div key={label}><span>{label}</span><b>{value}</b></div>)}</div>
       {stats.isPending ? <Skeleton /> : stats.isError ? <ErrorPanel error={stats.error} /> :
-        <LatencyChart points={stats.data.series} window={window} id="monitor-latency" />}
+        <CheckChart points={stats.data.series} window={window} id="monitor-latency" />}
     </section>
     <section className="panel separated"><header className="panel-heading"><div><h2><ShieldCheck size={18} /> TLS-сертификат</h2></div></header>
       <div className="stat-line">

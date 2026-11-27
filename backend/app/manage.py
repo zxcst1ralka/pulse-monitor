@@ -45,7 +45,8 @@ async def seed_demo(email: str, password: str):
                 status="down" if i == 5 else "up", notifications_enabled=False, is_synthetic=True,
                 consecutive_failures=2 if i == 5 else 0, last_checked_at=current,
                 next_check_at=current + timedelta(minutes=30), last_response_time_ms=None if i == 5 else latency,
-                ssl_expires_at=current + timedelta(days=45 + i), ssl_valid=True, ssl_hostname_valid=True,
+                ssl_expires_at=current + timedelta(days=12 if i == 1 else 45 + i),
+                ssl_valid=True, ssl_hostname_valid=True,
             )
             for i, (name, host, latency) in enumerate(SAMPLES)
         ]

@@ -22,8 +22,9 @@ IncidentStatus = Literal["ongoing", "resolved"]
 
 
 def normalize(data: MonitorInput) -> dict:
+    address = data.url if "://" in data.url else f"https://{data.url}"
     try:
-        url = validate_url(data.url)
+        url = validate_url(address)
     except UnsafeTarget as exc:
         raise HTTPException(422, str(exc)) from exc
     return {**data.model_dump(), "url": str(url)}
@@ -194,13 +195,13 @@ async def incident_detail(incident_id: UUID, db: Db, user: Account) -> IncidentV
 
 
 @dashboard.get("/summary")
-async def summary(db: Db, user: Account):
+async def summary(db: Db, user: Account, window: Window = "24h"):
     statuses = dict((await db.execute(select(Monitor.status, func.count()).where(
         Monitor.user_id == user.id,
     ).group_by(Monitor.status))).all())
     ids = select(Monitor.id).where(Monitor.user_id == user.id)
     metrics = (await db.execute(select(*totals()).where(
-        MonitorCheck.monitor_id.in_(ids), MonitorCheck.checked_at >= start_of("24h"),
+        MonitorCheck.monitor_id.in_(ids), MonitorCheck.checked_at >= start_of(window),
     ))).mappings().one()
     incidents_open = await db.scalar(select(func.count()).select_from(Incident).where(
         Incident.monitor_id.in_(ids), Incident.status == "ongoing",
@@ -212,6 +213,26 @@ async def summary(db: Db, user: Account):
 async def response_times(db: Db, user: Account, window: Window = "24h"):
     ids = list(await db.scalars(select(Monitor.id).where(Monitor.user_id == user.id)))
     return await chart(db, ids, window, now())
+
+
+@dashboard.get("/availability")
+async def availability(db: Db, user: Account, window: Window = "24h"):
+    ids = list(await db.scalars(select(Monitor.id).where(Monitor.user_id == user.id)))
+    return await chart(db, ids, window, now(), metric="availability")
+
+
+@dashboard.get("/ssl-warnings")
+async def ssl_warnings(db: Db, user: Account, limit: PageSize = 5, offset: Offset = 0):
+    expiry_limit = now() + timedelta(days=30)
+    rows = await db.execute(select(
+        Monitor.id, Monitor.name, Monitor.ssl_valid, Monitor.ssl_expires_at,
+    ).where(
+        Monitor.user_id == user.id, Monitor.is_active,
+        Monitor.ssl_valid.is_(False) | (Monitor.ssl_expires_at <= expiry_limit),
+    ).order_by(
+        Monitor.ssl_valid.asc().nulls_last(), Monitor.ssl_expires_at.nulls_last(), Monitor.id,
+    ).limit(limit).offset(offset))
+    return [dict(row) for row in rows.mappings()]
 
 
 @dashboard.get("/recent-incidents")

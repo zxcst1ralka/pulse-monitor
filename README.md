@@ -1,11 +1,14 @@
 # ![PulseMonitor logo](frontend/public/pulse.svg) PulseMonitor
 
+English · [Русский](README.ru.md)
+
 Self-hosted uptime and incident monitoring for websites and APIs. PulseMonitor runs scheduled HTTP checks, stores results in PostgreSQL and shows availability, latency and incidents in a Russian-language workspace.
 
 ## Features
 
-- HTTP/HTTPS and keyword checks with configurable interval, timeout, expected status and response-time threshold.
+- HTTP/HTTPS and keyword checks with configurable interval, timeout, expected status and response-time threshold. Bare public hostnames default to HTTPS.
 - Availability over 24 hours, 7 days and 30 days, plus average, minimum, maximum and P95 latency on successful checks.
+- Dashboard with availability and latency charts, service counts, incidents and TLS warnings.
 - Incident tracking after two consecutive failures and automatic resolution after recovery.
 - TLS certificate validity, hostname verification and expiry alerts.
 - Telegram notifications with confirmed account linking and delivery history.
@@ -20,7 +23,7 @@ Self-hosted uptime and incident monitoring for websites and APIs. PulseMonitor r
 
 ## Start locally
 
-Requirements are Docker with Linux containers and Docker Compose v2. On Windows, start Docker Desktop first. Generate local secrets and keep `.env` outside version control.
+Requirements are Docker with Linux containers and Docker Compose v2. On Windows, start Docker Desktop first. Generate local secrets on first setup and keep `.env` outside version control. If `.env` is already configured, run only the last command.
 
 **PowerShell 7**
 
