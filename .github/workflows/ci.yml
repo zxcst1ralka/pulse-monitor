@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: pulse_monitor_test
+          POSTGRES_USER: pulse_ci
+          POSTGRES_PASSWORD: ci-only
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U pulse_ci -d pulse_monitor_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://pulse_ci:ci-only@localhost:5432/pulse_monitor_test
+      TEST_REDIS_URL: redis://localhost:6379/14
+      APP_ENV: test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Migrate and verify schema
+        run: |
+          export DATABASE_URL="$TEST_DATABASE_URL" REDIS_URL="$TEST_REDIS_URL"
+          export JWT_SECRET_KEY="$(openssl rand -hex 48)"
+          alembic upgrade head
+          alembic check
+      - run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Start containers
+        run: |
+          echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
+          echo "JWT_SECRET_KEY=$(openssl rand -hex 48)" >> .env
+          docker compose up --build -d --wait
+      - working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+      - name: Container statuses on failure
+        if: failure()
+        run: docker compose ps -a
+      - name: Stop containers
+        if: always()
+        run: docker compose down -v
